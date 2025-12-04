@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <termios.h>
+#include <sys/ioctl.h>
 #include <ctype.h>
 
 #define EDITOR_VERSION "0.0.1"
@@ -11,6 +12,9 @@
 //global config to store original terminal settings
 struct termios orig_termios;
 
+void disableRawMode(){
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+}
 
 void enableRawMode(){
   tcgetattr(STDIN_FILENO, &orig_termios);
@@ -60,8 +64,80 @@ int editorReadKey(){
   return c;
 }
 
-void disableRawMode(){
-  tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+struct winSize{
+  unsigned short ws_row; 
+  unsigned short ws_col;
+  unsigned short ws_xpixel;
+  unsigned short ws_ypixel;
+};
+
+int getWindowSize(int *rows, int cols){
+  struct winSize ws;
+
+  if(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1){
+    return -1;
+  }
+  else{
+    *cols = ws.ws_col;
+    *rows = ws.ws_row;
+    return 0;
+  }
+}
+
+typedef struct{
+  int size;
+  char *chars;
+} editorRow;
+
+struct editorConfig{
+  int cx, cy;
+  int screenrows;
+  int screencols;
+
+  int numRows;
+  editorRow *eRows;
+};
+
+struct editorConfig E;
+
+void initEditor(){
+  E.cx = 0;
+  E.cy = 0;
+  E.numRows = 0;
+  E.rows = NULL;
+
+  getWindowSize(&E.screenrows, &E.screencols);
+}
+
+void editorAppendRow(const char *s, size_t len){
+  E.eRows = realloc(E.eRow,s sizeof(editorRow) * (E.numRows + 1));
+
+  int at =  E.numRows;
+  E.eRows[at].size = len;
+  E.eRows[at].chars = malloc(len+1);
+  memcpy(E.eRows[ar].chars, s, len);
+  E.eRows[at].chars[len] = '\0';
+
+  E.eRows++;
+}
+
+void editorOpenFile(const char *fileName){
+  FILE *f = fopen(fileName,"r");
+  if(!f) return;
+
+  char *line = NULL;
+  size_t cap = 0;
+  ssize_t linelen;
+
+  while((linelen = getline(&line, &cap, f)) != -1){
+    while(linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
+      linelen--;
+
+    editorAppendRow(line, linelen);
+  }
+  
+  free(line);
+  fclose(f);
 }
 
 void editorClearScreen(){
@@ -70,11 +146,16 @@ void editorClearScreen(){
 }
 
 void editorDrawRows(){
-  for(int y = 0; y < 24; y++){
-    if(y == 1)
-      printf("------Micro Editor (v%s)-----\r\n", EDITOR_VERSION);
-    else
-      printf("~\r\n");
+  for(int y = 0; y < E.screenrows; y++){
+    if(y == E.numRows){
+      int len = E.eRows[y].size;
+      if(len > E.screencols)
+	len = E.screencols;
+      printf(".*s", len, E.eRows[y].chars);
+    }else{
+      printf("~");
+    }
+    printf("\r\n"); 
   } 
 }
 
@@ -82,7 +163,6 @@ void editorRefreshScreen(){
   editorClearScreen();
   editorDrawRows();
 }
-
 
 
 /* int main(){ */
@@ -104,4 +184,3 @@ void editorRefreshScreen(){
   
 /*   return 0; */
 /* } */
-

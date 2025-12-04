@@ -5,6 +5,14 @@
 
 #define EDITOR_VERSION "0.0.1"
 
+/*
+  ssize_t: A signed integer type used for sizes and byte counts,
+  capable of holding −1 for errors and large values on 64-bit systems.
+  Often used as the return type of POSIX functions like read() and write().
+  In windows it is define inside BaseTsd.h -> WinDef.h -> Windows.h
+ */
+//typedef SSIZE_T ssize_t; 
+
 DWORD originalMode;
 
 void disableRawMode(){
@@ -47,10 +55,20 @@ int editorReadKey(){
   }
 }
 
+//Define EditorRow
+//Every line in the text file is stored in a struct
+typedef struct editorRow{
+  int size;  //number of characters in the row 
+  char *chars; 
+} editorRow;
+
 struct editorConfig{
   int cx, cy; //cursor X and Y position
   int screenrows;
   int screencols;
+
+  int numRows;
+  editorRow *eRow;
 };
 
 struct editorConfig E;
@@ -58,7 +76,9 @@ struct editorConfig E;
 void initEditor(){
   E.cx = 0;
   E.cy = 0;
-
+  E.numRows = 0;
+  E.eRow = NULL;
+  
   getWindowSize(&E.screenrows, &E.screencols);
 }
 
@@ -75,29 +95,67 @@ int getWindowSize(int *rows, int *cols){
   return 0;
 }
 
+//this function takes a line from a file and stores it inside E.rRow
+void editorAppendRow(const char *s, size_t len){
+  E.eRow = realloc(E.eRow, sizeof(editorRow) * (E.numRows + 1));
+
+  int at = E.numRows;
+  E.eRow[at].size = len;
+  E.eRow[at].chars = malloc(len + 1);
+  memcpy(E.eRow[at].chars, s, len);
+  E.eRow[at].chars[len] = '\0';
+  E.numRows++;
+}
+
+//this function load the file in editor
+void editorOpenFile(const char *fileName){
+  FILE *f = fopen(fileName, "r");
+  if(!f) return;
+
+  char *line = NULL;
+  size_t cap = 0;
+  size_t len = 0;
+
+  int c;
+  
+  while((c = fgetc(f)) != EOF){
+    if(len + 1 >= cap){
+      cap = (cap == 0) ? 128 : (cap * 2);
+      line = realloc(line, cap);
+    }
+    if(c == '\n'){
+      //remove \n and store the row
+      editorAppendRow(line, len);
+      len = 0;
+    }else if(c == '\r'){
+      //ignore CR (WINDOWs CRLF)
+      continue;
+    }else{
+      line[len++] = c;
+    }
+  }
+  //last line if file does not end with newline
+  if(len > 0){
+    editorAppendRow(line, len);
+  }
+
+  free(line);
+  fclose(f);
+}
+
 void editorClearScreen(){
-  printf("\x1b[2J");
-  printf("\x1b[H");
+  //printf("\x1b[?25l");//hide cursor
+  printf("\x1b[2J"); //clear screen
+  printf("\x1b[H"); //move cursor to home (top-left)
 }
 
 void editorDrawRows(){
   for(int y = 0; y < E.screenrows; y++){
-    if(y == E.screenrows / 3){
-      char welcome[80];
-      int welcomelen = snprintf(welcome, sizeof(welcome), "Mcro Editor (v%s)", EDITOR_VERSION);
-
-      if(welcomelen > E.screencols)
-	welcomelen = E.screencols;
-
-      int padding = (E.screencols - welcomelen) / 2;
-      if(padding){
-	printf("~");
-	padding--;
-      }
-
-      while(padding--) printf(" ");
-
-      printf("%.*s", welcomelen, welcome);
+    if(y < E.numRows ){
+      int len = E.eRow[y].size;
+      if(len > E.screencols)
+	len = E.screencols;
+      printf("%.*s", len, E.eRow[y].chars);
     }else{
       printf("~");
     }
@@ -109,9 +167,12 @@ void editorRefreshScreen(){
   editorClearScreen();
   editorDrawRows();
   printf("\x1b[%d;%dH", E.cy + 1, E.cx + 1); // cursor position
+  printf("\x1b[?25h");
   fflush(stdout);
 }
 
+
+//Main for independent test 
 /* int main(){ */
 /*   printf("Micro Editor Development session:\n"); */
 /*   enableRawMode(); */

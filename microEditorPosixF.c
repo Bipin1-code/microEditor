@@ -1,11 +1,12 @@
 
-#include "plateform.h"
+#include "platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <ctype.h>
+#include <string.h>
 
 #define EDITOR_VERSION "0.0.1"
 
@@ -44,7 +45,7 @@ int editorReadKey(){
 
   //if character is CSI (Control Sequence Introducer) which is 27 (in hex it's 0x1b)
   //'\x_' means- Insert the character whose ASCII Value is this hex number(_).
-  if(c == "\x1b"){
+  if(c == '\x1b'){
     char seq[3];
 
     //read next two bytes if available
@@ -64,24 +65,16 @@ int editorReadKey(){
   return c;
 }
 
-struct winSize{
-  unsigned short ws_row; 
-  unsigned short ws_col;
-  unsigned short ws_xpixel;
-  unsigned short ws_ypixel;
-};
-
-int getWindowSize(int *rows, int cols){
+int getWindowSize(int *rows, int *cols){
   struct winSize ws;
 
   if(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1){
     return -1;
   }
-  else{
-    *cols = ws.ws_col;
-    *rows = ws.ws_row;
-    return 0;
-  }
+  *cols = ws.ws_col;
+  *rows = ws.ws_row;
+  
+  return 0;
 }
 
 typedef struct{
@@ -104,21 +97,21 @@ void initEditor(){
   E.cx = 0;
   E.cy = 0;
   E.numRows = 0;
-  E.rows = NULL;
+  E.eRows = NULL;
 
   getWindowSize(&E.screenrows, &E.screencols);
 }
 
 void editorAppendRow(const char *s, size_t len){
-  E.eRows = realloc(E.eRow,s sizeof(editorRow) * (E.numRows + 1));
+  E.eRows = realloc(E.eRows, sizeof(editorRow) * (E.numRows + 1));
 
   int at =  E.numRows;
   E.eRows[at].size = len;
   E.eRows[at].chars = malloc(len+1);
-  memcpy(E.eRows[ar].chars, s, len);
+  memcpy(E.eRows[at].chars, s, len);
   E.eRows[at].chars[len] = '\0';
 
-  E.eRows++;
+  E.numRows++;
 }
 
 void editorOpenFile(const char *fileName){
@@ -147,11 +140,11 @@ void editorClearScreen(){
 
 void editorDrawRows(){
   for(int y = 0; y < E.screenrows; y++){
-    if(y == E.numRows){
+    if(y < E.numRows){
       int len = E.eRows[y].size;
       if(len > E.screencols)
 	len = E.screencols;
-      printf(".*s", len, E.eRows[y].chars);
+      printf("%.*s", len, E.eRows[y].chars);
     }else{
       printf("~");
     }
@@ -162,6 +155,9 @@ void editorDrawRows(){
 void editorRefreshScreen(){
   editorClearScreen();
   editorDrawRows();
+  printf("\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+  printf("\x1b[?25h");
+  fflush(stdout);
 }
 
 

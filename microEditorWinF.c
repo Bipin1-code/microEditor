@@ -4,7 +4,6 @@
 #include <stdio.h>
 
 #define EDITOR_VERSION "0.0.1"
-
 /*
   ssize_t: A signed integer type used for sizes and byte counts,
   capable of holding −1 for errors and large values on 64-bit systems.
@@ -63,27 +62,20 @@ typedef struct editorRow{
 } editorRow;
 
 struct editorConfig{
-  int cx, cy; //cursor X and Y position
-  int screenrows;
+  //cursor X and Y position
+  int cx, cy; //cx: cursor column (X position) and cy: cursor row (Y position)
+  
+  int screenrows; //these belongs to device's display on which editor is running
   int screencols;
 
-  int numRows;
-  editorRow *eRow;
+  int numRows; //this keep track eRow (size of eRow array);
+  editorRow *eRows;  //this represent editor 1 line (how many characters it has)
 };
 
 struct editorConfig E;
 
-void initEditor(){
-  E.cx = 0;
-  E.cy = 0;
-  E.numRows = 0;
-  E.eRow = NULL;
-  
-  getWindowSize(&E.screenrows, &E.screencols);
-}
-
 int getWindowSize(int *rows, int *cols){
-  CONSOLE_SCREEN_BUFFER_INFO csbi;
+  CONSOLE_SCREEN_BUFFER_INFO csbi;   //this struct contain display info provide by win api
 
   if(!GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)){
     return -1;
@@ -95,22 +87,67 @@ int getWindowSize(int *rows, int *cols){
   return 0;
 }
 
+void initEditor(){
+  E.cx = 0;
+  E.cy = 0;
+  E.numRows = 0;
+  E.eRows = NULL;
+  
+  getWindowSize(&E.screenrows, &E.screencols);
+}
+
+
+
 //this function takes a line from a file and stores it inside E.rRow
 void editorAppendRow(const char *s, size_t len){
-  E.eRow = realloc(E.eRow, sizeof(editorRow) * (E.numRows + 1));
+  E.eRows = realloc(E.eRows, sizeof(editorRow) * (E.numRows + 1));
 
   int at = E.numRows;
-  E.eRow[at].size = len;
-  E.eRow[at].chars = malloc(len + 1);
-  memcpy(E.eRow[at].chars, s, len);
-  E.eRow[at].chars[len] = '\0';
+  E.eRows[at].size = len;
+  E.eRows[at].chars = malloc(len + 1);
+  memcpy(E.eRows[at].chars, s, len);
+  E.eRows[at].chars[len] = '\0';
+  
   E.numRows++;
 }
+
+//Precaution: This function may remove or update in future
+int isBinaryFile(FILE *f){
+  unsigned char buf[4096];
+  size_t n = fread(buf, 1, sizeof(buf), f);
+  rewind(f);
+
+  if(n == 0)
+    return 0; //empty file
+
+  for(size_t i = 0; i < n; i++){
+    unsigned char c = buf[i];
+
+    if(c == 0) return 1; //NULL byte ->definitely binary 
+    if(c < 9) return 1; //weird control characters
+    if(c > 126){
+      if(!(c == '\n' || c == '\r' || c == '\t'))
+	return 1;
+    }
+  }
+  return 0; 
+}
+
 
 //this function load the file in editor
 void editorOpenFile(const char *fileName){
   FILE *f = fopen(fileName, "r");
-  if(!f) return;
+
+  if(!f){
+    printf("Cannot open file: %s\n", fileName);
+    return;
+  }
+
+  if(isBinaryFile(f)){
+    printf("Error: '%s' looks like a binary file. Cannot open.\n", fileName);
+    fclose(f);
+    return;
+  }
 
   char *line = NULL;
   size_t cap = 0;
@@ -152,10 +189,10 @@ void editorClearScreen(){
 void editorDrawRows(){
   for(int y = 0; y < E.screenrows; y++){
     if(y < E.numRows ){
-      int len = E.eRow[y].size;
+      int len = E.eRows[y].size;
       if(len > E.screencols)
 	len = E.screencols;
-      printf("%.*s", len, E.eRow[y].chars);
+      printf("%.*s", len, E.eRows[y].chars);
     }else{
       printf("~");
     }

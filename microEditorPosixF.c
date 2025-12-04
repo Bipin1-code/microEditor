@@ -65,18 +65,6 @@ int editorReadKey(){
   return c;
 }
 
-int getWindowSize(int *rows, int *cols){
-  struct winSize ws;
-
-  if(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1){
-    return -1;
-  }
-  *cols = ws.ws_col;
-  *rows = ws.ws_row;
-  
-  return 0;
-}
-
 typedef struct{
   int size;
   char *chars;
@@ -92,6 +80,18 @@ struct editorConfig{
 };
 
 struct editorConfig E;
+
+int getWindowSize(int *rows, int *cols){
+  struct winsize ws; 
+
+  if(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1){
+    return -1;
+  }
+  *cols = ws.ws_col;
+  *rows = ws.ws_row;
+  
+  return 0;
+}
 
 void initEditor(){
   E.cx = 0;
@@ -114,17 +114,48 @@ void editorAppendRow(const char *s, size_t len){
   E.numRows++;
 }
 
+//Precaution: This function may remove or update in future
+int isBinaryFile(FILE *f){
+  unsigned char buf[4096];
+  size_t n = fread(buf, 1, sizeof(buf), f);
+  rewind(f);
+
+  if(n == 0)
+    return 0; //empty file
+
+  for(size_t i = 0; i < n; i++){
+    unsigned char c = buf[i];
+
+    if(c == 0) return 1; //NULL byte ->definitely binary 
+    if(c < 9) return 1; //weird control characters
+    if(c > 126){
+      if(!(c == '\n' || c == '\r' || c == '\t'))
+	return 1;
+    }
+  }
+  return 0; 
+}
+
 void editorOpenFile(const char *fileName){
   FILE *f = fopen(fileName,"r");
-  if(!f) return;
+  if(!f){
+    printf("Cannot open file: %s\n", fileName);
+    return;
+  }
+
+  if(isBinaryFile(f)){
+    printf("Error: '%s' looks like a binary file. Cannot open.\n", fileName);
+    fclose(f);
+    return;
+  }
 
   char *line = NULL;
   size_t cap = 0;
   ssize_t linelen;
 
   while((linelen = getline(&line, &cap, f)) != -1){
-    while(linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r'))
-      linelen--;
+    while(linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) //we use while because \r\n may came together.(POSIX it always)
+      linelen--; //this remove '\n' and '\r'
 
     editorAppendRow(line, linelen);
   }

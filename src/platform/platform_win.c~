@@ -1,0 +1,151 @@
+
+
+#include "platform.h"
+#include "editor.h"
+#include <windows.h>
+#include <stdlib.h>
+
+static DWORD originalMode;
+
+
+void disableRawMode(){
+  SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), originalMode);
+}
+
+
+void enableRawMode(){
+  HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+  GetConsoleMode(hIn, &originalMode);
+
+  DWORD raw = originalMode;
+  raw &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+
+  SetConsoleMode(hIn, raw);
+
+  atexit(disableRawMode);
+}
+
+
+int editorReadKey(){
+  INPUT_RECORD record;
+  DWORD count;
+  while(1){
+    ReadConsoleInput(GetStdHandle(STD_INPUT_HANDLE), &record, 1, &count);
+  
+    if(record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown){
+      DWORD vk = record.Event.KeyEvent.wVirtualKeyCode;
+      char c = record.Event.KeyEvent.uChar.AsciiChar;
+
+      if(c != 0){
+	return c; //Normal ASCII key
+      }
+
+      switch(vk){
+         case VK_UP   : return ARROW_UP;
+         case VK_DOWN : return ARROW_DOWN;
+         case VK_LEFT : return ARROW_LEFT;
+         case VK_RIGHT: return ARROW_RIGHT;
+	   //Add more keys if needed
+      }
+    }
+  }
+}
+
+
+int getWindowSize(int *rows, int *cols){
+  CONSOLE_SCREEN_BUFFER_INFO csbi;   //this struct contain display info provide by win api
+
+  if(!GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)){
+    return -1;
+  }
+
+  *cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+  *rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+
+  return 0;
+}
+
+
+void platformWrite(const char *buf, DWORD len){
+  DWORD written;
+  HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+
+  DWORD mode;
+  if(GetConsoleMode(hOut, &mode)){
+    //Real console
+    WriteConsoleA(hOut, buf, len, &written, NULL);
+  }else{
+    //Redirect pipe/file
+    WriteFile(hOut, buf, len, &written, NULL);
+  }
+}
+
+/* int isBinaryFile(FILE *f){ */
+/*   unsigned char buf[4096]; */
+/*   size_t n = fread(buf, 1, sizeof(buf), f); */
+/*   rewind(f); */
+
+/*   if(n == 0) */
+/*     return 0; //empty file */
+
+/*   for(size_t i = 0; i < n; i++){ */
+/*     unsigned char c = buf[i]; */
+
+/*     if(c == 0) return 1; //NULL byte ->definitely binary  */
+/*     if(c < 9) return 1; //weird control characters */
+/*     if(c > 126){ */
+/*       if(!(c == '\n' || c == '\r' || c == '\t')) */
+/* 	return 1; */
+/*     } */
+/*   } */
+/*   return 0;  */
+/* } */
+
+
+/* //this for window function load the file in editor */
+/* int platformOpenFile(const char *fileName, editorConfig *E){ */
+/*   FILE *f = fopen(fileName, "r"); */
+
+/*   if(!f){ */
+/*     printf("Cannot open file: %s\n", fileName); */
+/*     return -1; */
+/*   } */
+
+/*   if(isBinaryFile(f)){ */
+/*     printf("Error: '%s' looks like a binary file. Cannot open.\n", fileName); */
+/*     fclose(f); */
+/*     return -1; */
+/*   } */
+
+/*   char *line = NULL; */
+/*   size_t cap = 0; */
+/*   size_t len = 0; */
+
+/*   int c; */
+  
+/*   while((c = fgetc(f)) != EOF){ */
+/*     if(len + 1 >= cap){ */
+/*       cap = (cap == 0) ? 128 : (cap * 2); */
+/*       line = realloc(line, cap); */
+/*     } */
+/*     if(c == '\n'){ */
+/*       //remove \n and store the row */
+/*       editorAppendRow(E, line, len); */
+/*       len = 0; */
+/*     }else if(c == '\r'){ */
+/*       //ignore CR (WINDOWs CRLF) */
+/*       continue; */
+/*     }else{ */
+/*       line[len++] = c; */
+/*     } */
+/*   } */
+/*   //last line if file does not end with newline */
+/*   if(len > 0){ */
+/*     editorAppendRow(E, line, len); */
+/*   } */
+
+/*   free(line); */
+/*   fclose(f); */
+  
+/*   return 0; */
+/* } */

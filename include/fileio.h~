@@ -1,0 +1,8 @@
+
+#ifndef FILEIO_H
+#define FILEIO_H
+
+void editorLoadFile(const char *fileName);
+void editorAppendRow(const char *s, int len);
+
+#endif

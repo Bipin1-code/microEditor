@@ -66,6 +66,7 @@ typedef struct{
   int rowOffset, colOffset;
 
   int renderX;
+  int preferredRx; //added for to fix softwrap cursor problem
   
   int screenRows, screenCols;
 
@@ -94,6 +95,7 @@ void initEditor(){
   E.rowOffset = 0;
   E.colOffset = 0;
   E.renderX = 0;
+  E.preferredRx = 0;
 
   getScreenSize(&E.screenRows, &E.screenCols);
 
@@ -108,13 +110,77 @@ void initEditor(){
   }
 }
 
+//effective columns we render (leave last column unused)
+static int effectiveCols(){
+  int c = E.screenCols - 1;
+  if(c < 1) return 1;
+  return c;
+}
+
+/* ---------- Tab-aware helpers (rx) ---------- */
+/*
+ rx_from_cx(line, cx) -> returns rendered column (rx) for logical index cx.
+ It counts characters and expands '\t' to tab stops (TAB).
+ cx may be from 0..line->size.
+*/
+
+int rx_from_cx(EditorLine *line, int cx){
+  if(!line) return 0;
+  int rx = 0;
+  int limit = cx;
+  if(limit > line->size) limit = line->size;
+  
+  for(int i = 0; i < limit; i++){
+    unsigned char ch = (unsigned char)line->chars[i];
+    if(ch == '\t'){
+      rx += (TAB - (rx % TAB));
+    }else{
+      rx++;
+    }
+  }
+  return rx;
+}
+
+/*
+ cx_from_rx(line, targetRx) -> returns the largest cx such that rx_from_cx(cx) <= targetRx.
+ Useful to map a visual x back to logical cx.
+*/
+int cx_from_rx(EditorLine *line,  int targetRx){
+  if(!line) return 0;
+  if(targetRx <= 0) return 0;
+  int rx = 0;
+
+  for(int i = 0; i < line->size; i++){
+    unsigned char ch = (unsigned char)line->chars[i];
+    if(ch == '\t'){
+      int add = TAB - (rx % TAB);
+      if(rx + add > targetRx) return i;
+      rx += add;
+    }else{
+      if(rx + 1 > targetRx) return i;
+      rx++;
+    }
+  }
+
+  //targetRx may be beyond end-> return end
+  return line->size;
+}
+
+//renderedLen(line) ->total rendered cols for the whole line (rx length).
+int renderedLen(EditorLine *line){
+  if(!line) return 0;
+  return rx_from_cx(line, line->size);
+}
+
 /* -----softWrap helpers-----------*/
+
 //how many visual rows a file line occupies
 int visualRowsForLine(EditorLine *line){
-  if(!line) return 1;
-  if(line->size == 0) return 1;
+  int eff = effectiveCols();
+  int rLen = renderedLen(line);
+  if(rLen == 0) return 1;
   
-  return (line->size + E.screenCols - 1) / E.screenCols;
+  return (rLen + eff - 1) / eff;
 }
 
 //Total visual rows across whole file
@@ -127,46 +193,64 @@ int totalVisualRows(){
   return tot;
 }
 
-//Given logical cursor for Y start from 0
+//sum rendered rows of previous lines + current line's rendered rx / eff
 int cursorVisualY(){
+  int eff = effectiveCols();
   int y = 0;
+  
   for(int i = 0; i < E.fCy; i++){
     y += visualRowsForLine(&E.lines[i]);
   }
-  y += (E.fCx / E.screenCols);
+  
+  int rx = rx_from_cx(&E.lines[E.fCy], E.fCx);
+  y += (rx / eff);
 
   return y;
 }
 
-//Given logical cursor return visual X (0-based)
-int cursorVisualX(){
-  return E.fCx % E.screenCols;
+//cursor  visual X (0-based) = rx % eff
+int cursorVisualXLocal(){
+  int eff = effectiveCols();
+  int rx = rx_from_cx(&E.lines[E.fCy], E.fCx);
+  
+  return rx % eff;
 }
 
-//Mapping visual coordinates (vy, vx) -- set logical E.fCy and E.fCx
-//vx is desired visual x
-void setCursorFromVisual(int vy, int vx){
-  if(vy < 0) vy = 0;
+//cursor  visual X (0-based) = rx % eff
+int cursorVisualXAbsolute(){
+  return rx_from_cx(&E.lines[E.fCy], E.fCx);
+}
 
+/*
+  Mapping visual coordinates (vy, vx):
+  -find which file line contains visual row vy
+  -compute the wrapped chunk baseRx and map vx->cx using cx_from_rx
+*/
+void setCursorFromVisual(int vy, int vxAbsolute){
+  if(vy < 0) vy = 0;
   int acc = 0;
+  int eff = effectiveCols();
+  
   for(int fileRow = 0; fileRow < E.countOfL; fileRow++){
     int vRows = visualRowsForLine(&E.lines[fileRow]);
     if(vy < acc + vRows){
       int part = vy - acc; 
       E.fCy = fileRow;
-      int base = part * E.screenCols;
-      //compute file line length
-      int llen = E.lines[fileRow].size;
-      int maxX = (llen - base > 0) ? (llen - base) : 0;
+      int baseRx = part * eff;
+      int rlineLen = renderedLen(&E.lines[fileRow]);
+      int localPref = vxAbsolute % eff;
+      int targetRx = baseRx + localPref;
       
-      if(vx > maxX)
-	vx = maxX;
+      if(targetRx > rlineLen) targetRx = rlineLen;
+      if(targetRx < 0) targetRx = 0;
       
-      E.fCx = base + vx;
+      //compute the corresposnding cx for this targetRx
+      int cx = cx_from_rx(&E.lines[fileRow], targetRx);
+      //ensure cx not beyond line length
+      if(cx > E.lines[fileRow].size)
+	cx = E.lines[fileRow].size;
       
-      //clamp fCx to line length
-      if(E.fCx > llen)
-	E.fCx = llen;
+      E.fCx = cx;
       
       return;
     }
@@ -179,48 +263,13 @@ void setCursorFromVisual(int vy, int vx){
     return;
   }
   //last line
-  int last = E.countOfL - 1;
-  E.fCy = last;
-  E.fCx = E.lines[last].size;
+  E.fCy = E.countOfL - 1;
+  E.fCx = E.lines[E.fCy].size;
 }
-
-/* int cursorCxToRx(const char *s, int cx){ */
-/*   int rx = 0; */
-/*   for(int i = 0; i < cx; i++){ */
-/*     if(s[i] == '\t'){ */
-/*       rx += (TAB - (rx % TAB)); */
-/*     }else{ */
-/*       rx++; */
-/*     } */
-/*   } */
-/*   return rx; */
-/* } */
-
-/* void renderScreen() { */
-/*   printf("\x1b[2J"); */
-/*   printf("\x1b[H"); */
-/*   for (int y = 0; y < E.screenRows; y++) { */
-/*     printf("\x1b[%d;1H", y + 1);  // Move cursor explicitly */
-/*     int fileRow = y + E.rowOffset; */
-/*     if (fileRow >= E.countOfL) { */
-/*       printf("~"); */
-/*     } else { */
-/*       EditorLine *line = &E.lines[fileRow]; */
-/*       int len = line->size; */
-/*       int start = E.colOffset; */
-/*       int end = E.colOffset + E.screenCols; */
-
-/*       if (start > len) start = len; */
-/*       if (end > len) end = len; */
-
-/*       fwrite(&line->chars[start], 1, end - start, stdout); */
-/*       printf("\x1b[K"); */
-/*     } */
-/*   } */
-/* } */
 
 void renderScreen(){
 
+  int eff = effectiveCols();
   printf("\x1b[?25l");
   printf("\x1b[H");
   printf("\x1b[2J");
@@ -230,7 +279,7 @@ void renderScreen(){
   int visRow = 0;
   for(int fileRow = 0; fileRow < E.countOfL && printed < E.screenRows; fileRow++){
     EditorLine *line = &E.lines[fileRow];
-    int len = line->size;
+    int rlineLen = renderedLen(line);
     int vRows = visualRowsForLine(line);
     
     for(int part = 0; part < vRows && printed < E.screenRows; part++){
@@ -239,27 +288,59 @@ void renderScreen(){
 	continue;
       }
 
-      int start = part * E.screenCols;
-      int end = start + E.screenCols;
+      int baseRx = part * eff;
+      int chunkRx = eff;
 
-      if(start > len) start = len;
-      if(end > len) end = len;
-      int chunkLen = end - start;
+      if(baseRx + chunkRx > rlineLen){
+	chunkRx = (rlineLen > baseRx) ? (rlineLen - baseRx) : 0;
+      }
+
+      /* -We need to extract the substring (logical chars)
+	 that correspond to rx range [baseRx, baseRx + chunkRx]
+	 -Build a small buffer by walking logical chars and
+	 emitting their expanded form until we cover needed rx range.
+	 -We'll write only the needed part to screen.
+      */
+      char outbuf[1024];
+      int outlen = 0;
+      int rx = 0;
+      int i = 0;
+      // walk logical chars, stop when rx >= base_rx + chunk_rx
+      while(i < line->size && rx < baseRx + chunkRx){
+	unsigned char ch = (unsigned char)line->chars[i];
+	if(ch == '\t'){
+	  int add = TAB - (rx % TAB);
+	  if(rx + add <= baseRx){
+	    rx += add;
+	    i++;
+	    continue;
+	  }
+	  for(int s = 0; s < add && rx < baseRx + chunkRx; s++){
+	    if(rx >= baseRx){
+	      if(outlen < (int)(sizeof(outbuf))) outbuf[outlen++] = ' ';
+	    }
+	    rx++;
+	  }
+	  i++;
+	}else{
+	  if(rx >= baseRx && rx < baseRx + chunkRx){
+	    if(outlen < (int)(sizeof(outbuf)))
+	      outbuf[outlen++] = (char)ch;
+	  }
+	  rx++;
+	  i++;
+	}
+      }
       
       // Move to screen row (printed - rowOffset) + 1
       int screenY = printed + 1; //printed count from 0
       printf("\x1b[%d;1H", screenY);
 
-      if(chunkLen > 0)
-	fwrite(&line->chars[start], 1, chunkLen, stdout);
-
-      if(chunkLen >= E.screenCols){
-	printf("\x1b[1C");
-	printf("\x1b[K");
-      }else{
-	printf("\x1b[K");
-      }
+      if(outlen > 0)
+	fwrite(outbuf, 1, outlen, stdout);
       
+      printf("\x1b[K");
+
       printed++;
       visRow++;
     }
@@ -280,6 +361,7 @@ void renderScreen(){
   fflush(stdout);
 }
 
+/* ---------- File loading / append ---------- */
 void editorAppendLine(const char *s, size_t len){
   if(E.countOfL == E.capOfL){
     E.capOfL *= 2;
@@ -287,18 +369,19 @@ void editorAppendLine(const char *s, size_t len){
   }
   EditorLine *line = &E.lines[E.countOfL];
   line->size = (int)len;
-  line->capacity = (int)len + 1;
+  line->capacity = (line->size < 64) ? 64 : line->size + 1;
   line->chars = malloc(line->capacity);
-  memcpy(line->chars, s, len);
+  if(len > 0)
+    memcpy(line->chars, s, len);
+  
   line->chars[len] = '\0';
-
   E.countOfL++;
 }
 
 void editorOpenFile(const char *fileName){
   FILE *f = fopen(fileName, "rb");
   if(!f){
-    printf("filed to load %s file", fileName);
+    fprintf(stderr, "filed to load %s file.\n", fileName);
     return;
   }
 
@@ -342,12 +425,14 @@ void editorScroll(){
     E.rowOffset = cVY - E.screenRows + 1;
   }
 
-  if(E.fCx < E.colOffset){
-    E.colOffset = E.fCx;
-  }
-  else if(E.fCx >= E.colOffset + E.screenCols){
-    E.colOffset = E.fCx - E.screenCols + 1;
-  }
+  //no horizontal scroll with soft-wrap
+  E.colOffset = 0;
+  /* if(E.fCx < E.colOffset){ */
+  /*   E.colOffset = E.fCx; */
+  /* } */
+  /* else if(E.fCx >= E.colOffset + E.screenCols){ */
+  /*   E.colOffset = E.fCx - E.screenCols + 1; */
+  /* } */
 }
 
 void moveCursor(int key){
@@ -355,9 +440,9 @@ void moveCursor(int key){
   case ARROW_UP: {
     int cVY = cursorVisualY();
     if(cVY > 0){
-      int cVX = cursorVisualX();
+      /* int cVX = cursorVisualXLocal(); */
       cVY--;
-      setCursorFromVisual(cVY, cVX);
+      setCursorFromVisual(cVY, E.preferredRx);
     }
     break;
   }
@@ -366,9 +451,9 @@ void moveCursor(int key){
     int cVY = cursorVisualY();
     int tot = totalVisualRows();
     if(cVY + 1 < tot){
-      int cVX = cursorVisualX();
+      /* int cVX = cursorVisualXLocal(); */
       cVY++;
-      setCursorFromVisual(cVY, cVX);
+      setCursorFromVisual(cVY, E.preferredRx);
     }
     break;
   }
@@ -380,6 +465,7 @@ void moveCursor(int key){
       E.fCy--;
       E.fCx = E.lines[E.fCy].size;
     }
+    E.preferredRx = cursorVisualXAbsolute();
     break;
   }
  
@@ -391,16 +477,19 @@ void moveCursor(int key){
       E.fCy++;
       E.fCx = 0;
     }
+    E.preferredRx = cursorVisualXAbsolute();
     break;
   } 
   }
   //prevent cursor from going past end of line
   if(E.fCy >= E.countOfL)
-    E.fCy = E.countOfL - 1;
+    E.fCy = (E.countOfL ? E.countOfL - 1 : 0);
+  
   if(E.fCy < 0) {
     E.fCy = 0;
     E.fCx = 0;
   }
+  //Clamp cursor to valid char position in current line
   int lineLen = (E.fCy < E.countOfL) ? E.lines[E.fCy].size : 0;
   if(E.fCx > lineLen)
     E.fCx = lineLen;
@@ -408,7 +497,7 @@ void moveCursor(int key){
 
 void positionCursor(){
   int cVY = cursorVisualY();
-  int cVX = cursorVisualX();
+  int cVX = cursorVisualXLocal();
   int screenY = cVY - E.rowOffset + 1;
   int screenX = cVX + 1;
 

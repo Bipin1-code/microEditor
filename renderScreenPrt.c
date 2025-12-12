@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <windows.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #define TAB 8
 #define ARROW_UP    0x0101
@@ -8,7 +9,19 @@
 #define ARROW_LEFT  0x0103
 #define ARROW_RIGHT 0x0104
 
+#define CRTL_ARROW_LEFT  0x0201
+#define CRTL_ARROW_RIGHT 0x0202
+#define CRTL_ARROW_UP    0x0203
+#define CRTL_ARROW_DOWN  0x0204
+
+#define ALT_ARROW_LEFT  0x0205
+#define ALT_ARROW_RIGHT 0x0206
+#define ALT_ARROW_UP    0x0207
+#define ALT_ARROW_DOWN  0x0208
+
 static DWORD originalMode;
+static DWORD originalOutMode = 0;
+static bool vt_enabled = false;
 
 void disableRawMode(){
   SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), originalMode);
@@ -27,6 +40,44 @@ void enableRawMode(){
   atexit(disableRawMode);
 }
 
+void restoreVirtualTerminalProcessing(){
+  if(!vt_enabled) return;
+  HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+  SetConsoleMode(hout, originalOutMode);
+  vt_enabled = false;
+}
+
+void enableVirtualTerminalProcessing(){
+  HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+  DWORD mode;
+  if(!GetConsoleMode(hout, &mode)) return;
+  originalOutMode = mode;
+  //enable VT processing and disable newline auto-return if available
+  DWORD newMode = mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+  if(SetConsoleMode(hout, newMode)){
+    vt_enabled = true;
+  }else{
+    vt_enabled = false;
+  }
+
+  atexit(restoreVirtualTerminalProcessing);
+}
+
+void leaveAlternateBuffer(){
+  if(!vt_enabled) return;
+  printf("\x1b[?1049l");
+  fflush(stdout);
+}
+
+void enterAlternateBuffer(){
+  if(!vt_enabled) return;
+  printf("\x1b[?1049h");
+  fflush(stdout);
+  
+  atexit(leaveAlternateBuffer);
+}
+
+
 int readKeyPress(){
   INPUT_RECORD record;
   DWORD count;
@@ -34,8 +85,26 @@ int readKeyPress(){
     ReadConsoleInput(GetStdHandle(STD_INPUT_HANDLE), &record, 1, &count);
     if(record.EventType == KEY_EVENT && record.Event.KeyEvent.bKeyDown){
       DWORD vk = record.Event.KeyEvent.wVirtualKeyCode;
+      DWORD mods = record.Event.KeyEvent.dwControlKeyState;
       char c = record.Event.KeyEvent.uChar.AsciiChar;
+      
+      //Detect ctrl and Alt
+      int ctrl = (mods & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0;
+      int alt = (mods & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0;
 
+      //bind with letter keys (ctrl-A to ctrl-Z)
+      if(ctrl && c >= 1 && c <= 26) return c;
+      //bind with arrow keys
+      if(ctrl && vk == VK_LEFT)  return CRTL_ARROW_LEFT;
+      if(ctrl && vk == VK_RIGHT) return CRTL_ARROW_RIGHT;
+      if(ctrl && vk == VK_UP)    return CRTL_ARROW_UP;
+      if(ctrl && vk == VK_DOWN)  return CRTL_ARROW_DOWN;
+
+      if(alt && vk == VK_LEFT)  return ALT_ARROW_LEFT;
+      if(alt && vk == VK_RIGHT) return ALT_ARROW_RIGHT;
+      if(alt && vk == VK_UP)    return ALT_ARROW_UP;
+      if(alt && vk == VK_DOWN)  return ALT_ARROW_DOWN;
+      
       if(c != 0){
 	return c;
       }
@@ -88,7 +157,7 @@ int getScreenSize(int *height, int *width){
 
   return 0;
 }
-
+void editorAppendLine(const char *s, size_t len);
 void initEditor(){
   E.fCx = 0;
   E.fCy = 0;
@@ -97,8 +166,13 @@ void initEditor(){
   E.renderX = 0;
   E.preferredRx = 0;
 
+  enableVirtualTerminalProcessing();
+  enableRawMode();
+  
   getScreenSize(&E.screenRows, &E.screenCols);
 
+  enterAlternateBuffer();
+  
   E.countOfL = 0;
   E.capOfL = 16;
   E.lines = (EditorLine*)malloc(E.capOfL * sizeof(EditorLine));
@@ -108,6 +182,8 @@ void initEditor(){
     E.lines[i].capacity = 0;
     E.lines[i].chars = NULL;
   }
+
+  editorAppendLine("", 0);
 }
 
 //effective columns we render (leave last column unused)
@@ -268,11 +344,12 @@ void setCursorFromVisual(int vy, int vxAbsolute){
 }
 
 void renderScreen(){
-
   int eff = effectiveCols();
   printf("\x1b[?25l");
   printf("\x1b[H");
   printf("\x1b[2J");
+  printf("\x1b[H");
+  
   //how many visual rows we have printed so far
   int printed = 0;
   //running visual row index
@@ -333,9 +410,14 @@ void renderScreen(){
       }
       
       // Move to screen row (printed - rowOffset) + 1
-      int screenY = printed + 1; //printed count from 0
+      int screenY = printed + 1;
+      if(screenY < 1 || screenY > E.screenRows){
+	break;
+      }
       printf("\x1b[%d;1H", screenY);
 
+      if(outlen > eff)
+	outlen = eff;
       if(outlen > 0)
 	fwrite(outbuf, 1, outlen, stdout);
       
@@ -600,7 +682,7 @@ void editorBackspace(){
 
 //Delete key Operation
 void editorDelRow(int at){
-  if(at < 0 || at > E.countOfL) return;
+  if(at < 0 || at >= E.countOfL) return;
 
   free(E.lines[at].chars);
 
@@ -619,7 +701,7 @@ void editorDelChar(){
   if(E.fCx < line->size){
     //shift everything left by one
     memmove(&line->chars[E.fCx], &line->chars[E.fCx + 1],
-	    line->size - (E.fCx - 1));
+	    line->size - E.fCx);
     line->size--;
     line->chars[line->size] = '\0';
 
@@ -636,6 +718,7 @@ void editorDelChar(){
 
     line->size += nextLine->size;
     line->chars[line->size] = '\0';
+    line->capacity = line->size + (nextLine->size + 1);
 
     //delete next line from array
     editorDelRow(E.fCy + 1);
@@ -646,11 +729,20 @@ void editorDelChar(){
 
 //Enter key Operation
 void insertLine(int at, const char *s){
-  E.lines = realloc(E.lines, (E.countOfL + 1) * sizeof(EditorLine));
+  if (at < 0 || at > E.countOfL) return;
+  
+  if(E.countOfL == E.capOfL){
+    E.capOfL *= 2;
+    E.lines = realloc(E.lines, E.capOfL * sizeof(EditorLine));
+  }
+  
   memmove(&E.lines[at + 1], &E.lines[at],
 	  (E.countOfL - at) * sizeof(EditorLine));
   E.lines[at].size = strlen(s);
-  E.lines[at].chars = strdup(s);
+  E.lines[at].capacity = E.lines[at].size + 1;
+  E.lines[at].chars = malloc(E.lines[at].capacity);
+  memcpy(E.lines[at].chars, s, E.lines[at].capacity);
+
   E.countOfL++;
 }
 
@@ -694,7 +786,6 @@ int main(int argc, char *argv[]){
   printf("\x1b[37;44mPress any key to begin>>>>\x1b[0m\n");
   getchar();
 
-  enableRawMode();
   initEditor();
 
   if(argc >= 2){
@@ -707,7 +798,8 @@ int main(int argc, char *argv[]){
     positionCursor();
     int c = readKeyPress();
     
-    if(c == 'q' || c == 'Q'){
+    if(c == 17){
+      //ctrl-Q
       printf("\x1b[2J");
       break;
     }else if(c >= 32 && c <= 126){

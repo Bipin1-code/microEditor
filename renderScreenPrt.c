@@ -543,6 +543,7 @@ void editorInsertChar(int c){
   E.preferredRx = cursorVisualXAbsolute();
 }
 
+//Backspace key operation
 void editorDelCharInLine(EditorLine *line, int at){
   if(at < 0 || at >= line->size) return;
   memmove(&line->chars[at], &line->chars[at + 1], line->size - at);
@@ -597,6 +598,96 @@ void editorBackspace(){
   }
 }
 
+//Delete key Operation
+void editorDelRow(int at){
+  if(at < 0 || at > E.countOfL) return;
+
+  free(E.lines[at].chars);
+
+  memmove(&E.lines[at], &E.lines[at + 1],
+	  (E.countOfL - at - 1) * sizeof(EditorLine));
+
+  E.countOfL--;
+}
+
+void editorDelChar(){
+  if(E.fCy >= E.countOfL) return;
+
+  EditorLine *line = &E.lines[E.fCy];
+
+  //Case 1: delete character to the right
+  if(E.fCx < line->size){
+    //shift everything left by one
+    memmove(&line->chars[E.fCx], &line->chars[E.fCx + 1],
+	    line->size - (E.fCx - 1));
+    line->size--;
+    line->chars[line->size] = '\0';
+
+    return;
+  }
+
+  //case 2: at end of line - merge with next line
+  if(E.fCy + 1 < E.countOfL){
+    EditorLine *nextLine = &E.lines[E.fCy + 1];
+
+    //grow current row for next line contents
+    line->chars = realloc(line->chars, line->size + (nextLine->size + 1));
+    memcpy(&line->chars[line->size], nextLine->chars, nextLine->size);
+
+    line->size += nextLine->size;
+    line->chars[line->size] = '\0';
+
+    //delete next line from array
+    editorDelRow(E.fCy + 1);
+
+    return;
+  }
+}
+
+//Enter key Operation
+void insertLine(int at, const char *s){
+  E.lines = realloc(E.lines, (E.countOfL + 1) * sizeof(EditorLine));
+  memmove(&E.lines[at + 1], &E.lines[at],
+	  (E.countOfL - at) * sizeof(EditorLine));
+  E.lines[at].size = strlen(s);
+  E.lines[at].chars = strdup(s);
+  E.countOfL++;
+}
+
+void editorInsertNewLine(){
+  EditorLine *line = &E.lines[E.fCy];
+
+  if(E.fCx == 0){
+    //cursor at start: create an empty line above
+    insertLine(E.fCy, "");
+  }else{
+    //split into two lines
+    char *right = strdup(&line->chars[E.fCx]);
+    //left part kept as current line
+    line->size = E.fCx;
+    line->chars[line->size] = '\0';
+
+    insertLine(E.fCy + 1, right);
+
+    free(right);
+  }
+  //Move the cursor to start of new line
+  E.fCy++;
+  E.fCx = 0;
+
+  E.preferredRx = cursorVisualXAbsolute();
+}
+
+//Tab key (we define Tab = 8chars)
+void editorProcessTab(){
+  int rx = rx_from_cx(&E.lines[E.fCy], E.fCx);
+  int spaces = TAB - (rx % TAB);
+
+  for(int t = 0; t < spaces; t++){
+    editorInsertChar(' ');
+  }
+}
+
 /*---------------Main-----------------------*/
 int main(int argc, char *argv[]){
   printf("Today I have to Conquered this rendering.\n");
@@ -625,6 +716,15 @@ int main(int argc, char *argv[]){
 
     if(c == 8){
       editorBackspace();
+    }
+    if(c == 127){
+      editorDelChar();
+    }
+    if(c == '\r'){
+      editorInsertNewLine();
+    }
+    if(c == '\t'){
+      editorProcessTab();
     }
 
     switch(c){

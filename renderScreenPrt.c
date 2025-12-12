@@ -216,7 +216,7 @@ int cursorVisualXLocal(){
   return rx % eff;
 }
 
-//cursor  visual X (0-based) = rx % eff
+//cursor  visual X (0-based)
 int cursorVisualXAbsolute(){
   return rx_from_cx(&E.lines[E.fCy], E.fCx);
 }
@@ -435,6 +435,7 @@ void editorScroll(){
   /* } */
 }
 
+/*-------------key Processing----------------*/
 void moveCursor(int key){
   switch(key){
   case ARROW_UP: {
@@ -513,9 +514,93 @@ void positionCursor(){
   fflush(stdout);
 }
 
+/*---------Editor Operation----------------- */
+void ensureLineCapacity(EditorLine *line, int newSize){
+  if(newSize + 1 > line->capacity){
+    int newCap = line->capacity * 2;
+    if(newCap < newSize + 1)
+      newCap = newSize + 1;
+
+    line->chars = realloc(line->chars, newCap);
+    line->capacity = newCap;
+  }
+}
+
+void editorInsertChar(int c){
+  if(E.fCy >= E.countOfL) return;
+  EditorLine *line = &E.lines[E.fCy];
+  //expand capacity if needed
+  ensureLineCapacity(line, line->size + 1);
+  //shift right
+  memmove(&line->chars[E.fCx + 1], &line->chars[E.fCx], line->size - E.fCx + 1);
+  //insert new char
+  line->chars[E.fCx] = (char)c;
+  //Update size, cursor
+  line->size++;
+  E.fCx++;
+
+  //update preferredRx for current arrow-up/down behavior
+  E.preferredRx = cursorVisualXAbsolute();
+}
+
+void editorDelCharInLine(EditorLine *line, int at){
+  if(at < 0 || at >= line->size) return;
+  memmove(&line->chars[at], &line->chars[at + 1], line->size - at);
+  line->size--;
+}
+
+void editorJoinLineWithPrev(int row){
+  if(row <= 0 || row >= E.countOfL) return;
+  EditorLine *line = &E.lines[row];
+  EditorLine *prev = &E.lines[row - 1];
+
+  //grow previous line to hold new chars
+  int newSize = prev->size + line->size;
+  ensureLineCapacity(prev, newSize);
+
+  //append current line to previous
+  memcpy(&prev->chars[prev->size], line->chars, line->size);
+  prev->size = newSize;
+  prev->chars[newSize] = '\0';
+
+  //remove current line from array
+  free(line->chars);
+
+  memmove(&E.lines[row], &E.lines[row + 1],
+	  (E.countOfL - row - 1) * sizeof(EditorLine));
+
+  E.countOfL--;
+}
+
+void editorBackspace(){
+  if(E.fCy < 0 || E.fCy >= E.countOfL) return;
+
+  //case 1: delete inside line
+  if(E.fCx > 0){
+    editorDelCharInLine(&E.lines[E.fCy], E.fCx - 1);
+    E.fCx--;
+    E.preferredRx = cursorVisualXAbsolute();
+    
+    return;
+  }
+
+  //case 2: starting of line -> join with previous line
+  if(E.fCy > 0 && E.fCx == 0){
+    int prevLen = E.lines[E.fCy - 1].size;
+    editorJoinLineWithPrev(E.fCy);
+
+    E.fCy--;
+    E.fCx = prevLen;
+    E.preferredRx = cursorVisualXAbsolute();
+    
+    return;
+  }
+}
+
+/*---------------Main-----------------------*/
 int main(int argc, char *argv[]){
   printf("Today I have to Conquered this rendering.\n");
-  printf("\x1b[32;43mPress any key to begin>>>>\x1b[0m\n");
+  printf("\x1b[37;44mPress any key to begin>>>>\x1b[0m\n");
   getchar();
 
   enableRawMode();
@@ -534,6 +619,12 @@ int main(int argc, char *argv[]){
     if(c == 'q' || c == 'Q'){
       printf("\x1b[2J");
       break;
+    }else if(c >= 32 && c <= 126){
+      editorInsertChar(c);
+    }
+
+    if(c == 8){
+      editorBackspace();
     }
 
     switch(c){

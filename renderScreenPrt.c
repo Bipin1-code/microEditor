@@ -55,7 +55,7 @@ void enableVirtualTerminalProcessing(){
   if(!GetConsoleMode(hout, &mode)) return;
   originalOutMode = mode;
   //enable VT processing and disable newline auto-return if available
-  DWORD newMode = mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN;
+  DWORD newMode = mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN | ENABLE_PROCESSED_OUTPUT; 
   if(SetConsoleMode(hout, newMode)){
     vt_enabled = true;
   }else{
@@ -143,6 +143,9 @@ typedef struct{
   int countOfL;
   int capOfL;
   EditorLine *lines;
+
+  char *fileName;
+  
 } EditorState;
 
 static EditorState E;
@@ -177,14 +180,14 @@ void initEditor(){
   E.countOfL = 0;
   E.capOfL = 16;
   E.lines = (EditorLine*)malloc(E.capOfL * sizeof(EditorLine));
-
+  
   for (int i = 0; i < E.capOfL; i++) {
     E.lines[i].size = 0;
     E.lines[i].capacity = 0;
     E.lines[i].chars = NULL;
   }
 
-  editorAppendLine("", 0);
+  E.fileName = NULL;
 }
 
 //effective columns we render (leave last column unused)
@@ -345,6 +348,7 @@ void setCursorFromVisual(int vy, int vxAbsolute){
 }
 
 /*---------RenderBuffer (Helper of renderScreen())--------*/
+
 typedef struct{
   int len;
   int cap;
@@ -387,12 +391,12 @@ void renderScreen(RenderBuf *rb){
   int printed = 0;
   //running visual row index
   int visRow = 0;
-  for(int fileRow = 0; fileRow < E.countOfL && printed < E.screenRows; fileRow++){
+  for(int fileRow = 0; fileRow < E.countOfL && printed < E.screenRows - 1; fileRow++){
     EditorLine *line = &E.lines[fileRow];
     int rlineLen = renderedLen(line);
     int vRows = visualRowsForLine(line);
     
-    for(int part = 0; part < vRows && printed < E.screenRows; part++){
+    for(int part = 0; part < vRows && printed < E.screenRows - 1; part++){
       if(visRow < E.rowOffset){
 	visRow++;
 	continue;
@@ -444,7 +448,7 @@ void renderScreen(RenderBuf *rb){
       
       // Move to screen row (printed - rowOffset) + 1
       int screenY = printed + 1;
-      if(screenY < 1 || screenY > E.screenRows){
+      if(screenY < 1 || screenY > E.screenRows - 1){
 	break;
       }
       char buf[32];
@@ -465,7 +469,7 @@ void renderScreen(RenderBuf *rb){
     }
   }
   //if there's remaining screen rows (after EOF),
-  while(printed < E.screenRows){
+  while(printed < E.screenRows - 1){
     if(visRow >= E.rowOffset){
       char tmp[32];
       int n = snprintf(tmp, sizeof(tmp), "\x1b[%d;1H", printed + 1);
@@ -475,7 +479,7 @@ void renderScreen(RenderBuf *rb){
       printed++;
     }
     visRow++;
-    if(printed >= E.screenRows) break;
+    if(printed >= E.screenRows - 1) break;
   }
 }
 
@@ -504,6 +508,7 @@ void editorOpenFile(const char *fileName){
     return;
   }
 
+  E.fileName = strdup(fileName);
   char *line = NULL;
   size_t cap = 0;
   size_t len = 0;
@@ -540,8 +545,8 @@ void editorScroll(){
   if(cVY < E.rowOffset){
     E.rowOffset = cVY;
   }
-  else if(cVY >= E.rowOffset + E.screenRows){
-    E.rowOffset = cVY - E.screenRows + 1;
+  else if(cVY >= E.rowOffset + (E.screenRows - 1)){
+    E.rowOffset = cVY - (E.screenRows - 1) + 1;
   }
 
   //no horizontal scroll with soft-wrap
@@ -622,8 +627,8 @@ void positionCursor(RenderBuf *rb){
   int screenX = cVX + 1;
 
   if(screenY < 1) screenY = 1;
-  if(screenY > E.screenRows)
-    screenY = E.screenRows;
+  if(screenY > E.screenRows - 1)
+    screenY = E.screenRows - 1;
 
   if(screenX < 1) screenX = 1;
   if(screenX > E.screenCols)
@@ -818,6 +823,45 @@ void editorProcessTab(){
   }
 }
 
+/*-----------Render Status Bar---------------*/
+void renderStatusBar(RenderBuf *rb){
+  char status[256];
+  char rstatus[128];
+
+  int len = snprintf(status, sizeof(status),
+		     " [%.20s - %d lines]",
+		     E.fileName ? E.fileName : "[No Name]", E.countOfL);
+
+  int cx = E.fCx + 1;
+  int cy = E.fCy + 1;
+
+  snprintf(rstatus, sizeof(rstatus),
+	   " [Ln %d, Col %d] | [Help (Ctrl+H)] ", cy, cx);
+
+  if(len > E.screenCols)
+    len = E.screenCols;
+
+  //Move to last Row
+  char buf[32];
+  snprintf(buf, sizeof(buf), "\x1b[%d;1H", E.screenRows);
+  rbAppendStr(rb, buf);
+
+  //Invert Colors
+  rbAppendStr(rb, "\x1b[7m");
+  rbAppend(rb, status, len);
+
+  //fill space between left and right status
+  while(len < E.screenCols){
+    if(E.screenCols - len == (int)strlen(rstatus)){
+      rbAppendStr(rb, rstatus);
+      break;
+    }
+    rbAppend(rb, " ", 1);
+    len++;
+  }
+  rbAppendStr(rb, "\x1b[0m");
+}
+
 /*---------------Main-----------------------*/
 int main(int argc, char *argv[]){
   printf("Today I have to Conquered this rendering.\n");
@@ -828,6 +872,8 @@ int main(int argc, char *argv[]){
 
   if(argc >= 2){
     editorOpenFile(argv[1]);
+  }else{
+     editorAppendLine("", 0);
   }
   
   while(1){
@@ -836,6 +882,7 @@ int main(int argc, char *argv[]){
     RenderBuf rb;
     rbInit(&rb);
     renderScreen(&rb);
+    renderStatusBar(&rb);
     positionCursor(&rb);
 
     //One Write

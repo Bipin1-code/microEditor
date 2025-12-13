@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#define RB_INIT_CAP 1024
+
 #define TAB 8
 #define ARROW_UP    0x0101
 #define ARROW_DOWN  0x0102
@@ -76,7 +78,6 @@ void enterAlternateBuffer(){
   
   atexit(leaveAlternateBuffer);
 }
-
 
 int readKeyPress(){
   INPUT_RECORD record;
@@ -343,12 +344,44 @@ void setCursorFromVisual(int vy, int vxAbsolute){
   E.fCx = E.lines[E.fCy].size;
 }
 
-void renderScreen(){
+/*---------RenderBuffer (Helper of renderScreen())--------*/
+typedef struct{
+  int len;
+  int cap;
+  char *buf;
+} RenderBuf;
+
+void rbInit(RenderBuf *rb){
+  rb->len = 0;
+  rb->cap = RB_INIT_CAP;
+  rb->buf =(char*)malloc(rb->cap * sizeof(char));
+}
+
+void rbFree(RenderBuf *rb){
+  free(rb->buf);
+}
+
+void rbAppend(RenderBuf *rb, const char *s, int length){
+  int reqCap = rb->len + length;
+  if(reqCap >= rb->cap){
+    int newCap = rb->cap;
+    while(newCap <= reqCap)
+      newCap *= 2; //we are making sure newCap have enough memory after update
+    rb->buf = realloc(rb->buf, newCap);
+    rb->cap = newCap; 
+  }
+  memcpy(&rb->buf[rb->len], s, length);
+  rb->len += length;
+}
+
+void rbAppendStr(RenderBuf *rb, const char *s){
+  int length = (int)strlen(s);
+  rbAppend(rb, s, length);
+}
+
+void renderScreen(RenderBuf *rb){
   int eff = effectiveCols();
-  printf("\x1b[?25l");
-  printf("\x1b[H");
-  printf("\x1b[2J");
-  printf("\x1b[H");
+  rbAppendStr(rb, "\x1b[H");
   
   //how many visual rows we have printed so far
   int printed = 0;
@@ -414,14 +447,18 @@ void renderScreen(){
       if(screenY < 1 || screenY > E.screenRows){
 	break;
       }
-      printf("\x1b[%d;1H", screenY);
+      char buf[32];
+      int n = snprintf(buf, sizeof(buf), "\x1b[%d;1H", screenY);
+      rbAppend(rb, buf, n);
 
       if(outlen > eff)
 	outlen = eff;
-      if(outlen > 0)
-	fwrite(outbuf, 1, outlen, stdout);
+      if(outlen > 0){
+	//fwrite(outbuf, 1, outlen, stdout);
+	rbAppend(rb, outbuf, outlen);
+      }
       
-      printf("\x1b[K");
+      rbAppendStr(rb, "\x1b[K");
 
       printed++;
       visRow++;
@@ -430,17 +467,16 @@ void renderScreen(){
   //if there's remaining screen rows (after EOF),
   while(printed < E.screenRows){
     if(visRow >= E.rowOffset){
-      printf("\x1b[%d;1H", printed + 1);
-      printf("~");
-      printf("\x1b[K");
+      char tmp[32];
+      int n = snprintf(tmp, sizeof(tmp), "\x1b[%d;1H", printed + 1);
+      rbAppend(rb, tmp, n);
+      rbAppend(rb, "~", 1);
+      rbAppendStr(rb, "\x1b[K");
       printed++;
     }
     visRow++;
     if(printed >= E.screenRows) break;
   }
-  
-  printf("\x1b[?25h");
-  fflush(stdout);
 }
 
 /* ---------- File loading / append ---------- */
@@ -460,6 +496,7 @@ void editorAppendLine(const char *s, size_t len){
   E.countOfL++;
 }
 
+//ToDo: later I need to change printf function with RenderBuf
 void editorOpenFile(const char *fileName){
   FILE *f = fopen(fileName, "rb");
   if(!f){
@@ -578,7 +615,7 @@ void moveCursor(int key){
     E.fCx = lineLen;
 }
 
-void positionCursor(){
+void positionCursor(RenderBuf *rb){
   int cVY = cursorVisualY();
   int cVX = cursorVisualXLocal();
   int screenY = cVY - E.rowOffset + 1;
@@ -591,9 +628,10 @@ void positionCursor(){
   if(screenX < 1) screenX = 1;
   if(screenX > E.screenCols)
     screenX = E.screenCols;
-  
-  printf("\x1b[%d;%dH", screenY, screenX);
-  fflush(stdout);
+
+  char tmp[32];
+  int n = snprintf(tmp, sizeof(tmp), "\x1b[%d;%dH", screenY, screenX);
+  rbAppend(rb, tmp, n);
 }
 
 /*---------Editor Operation----------------- */
@@ -794,8 +832,18 @@ int main(int argc, char *argv[]){
   
   while(1){
     editorScroll();
-    renderScreen();
-    positionCursor();
+
+    RenderBuf rb;
+    rbInit(&rb);
+    renderScreen(&rb);
+    positionCursor(&rb);
+
+    //One Write
+    DWORD written;
+    WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), rb.buf, rb.len, &written, NULL);
+
+    rbFree(&rb);
+    
     int c = readKeyPress();
     
     if(c == 17){

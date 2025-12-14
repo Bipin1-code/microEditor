@@ -862,9 +862,78 @@ void renderStatusBar(RenderBuf *rb){
   rbAppendStr(rb, "\x1b[0m");
 }
 
+/*-----------Prompt ----------------------*/
+void editorClearBuffer(){
+  for(int i = 0; i < E.countOfL; i++){
+    free(E.lines[i].chars);
+  }
+  E.countOfL = 0;
+  E.fCy = E.fCx = 0;
+  E.rowOffset = 0;
+  E.preferredRx = 0;
+}
+
+char *editorPrompt(const char *prompt){
+  size_t bufSize = 128;
+  char *buf = (char*)malloc(bufSize * sizeof(char));
+  size_t len = 0;
+
+  buf[0] = '\0';
+
+  while(1){
+    RenderBuf rb;
+    rbInit(&rb);
+
+    renderScreen(&rb);
+
+    //draw prompt
+    char line[E.screenCols + 1];
+    int max = E.screenCols - (int)strlen(prompt);
+    if(max < 0) max = 0;
+    snprintf(line, E.screenCols + 1, "%s%.*s",
+	     prompt, max,  buf);
+    char pos[64];
+    snprintf(pos, sizeof(pos), "\x1b[%d;1H", E.screenRows);
+    rbAppendStr(&rb, pos);
+    rbAppendStr(&rb, "\x1b[7m");
+    rbAppendStr(&rb, line);
+    rbAppendStr(&rb, "\x1b[K\x1b[0m");
+
+    int cx = (int)strlen(prompt) + (int)len + 1;
+    char cpos[32];
+    snprintf(cpos, sizeof(cpos), "\x1b[%d;%dH", E.screenRows, cx);
+    rbAppendStr(&rb, cpos);
+
+    DWORD written;
+    WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), rb.buf, rb.len, &written, NULL);
+    rbFree(&rb);
+
+    int c = readKeyPress();
+
+    if(c == 27){
+      free(buf);
+      return NULL;
+    }else if(c == '\r'){
+      if(len != 0){
+	buf[len] = '\0';
+	return buf;
+      }
+    }else if(c == 8 || c == 127){
+      if(len > 0) buf[--len] = '\0';
+    }else if(c >= 32 && c <= 126){
+      if(len+1 >= bufSize){
+	bufSize *= 2;
+	buf = realloc(buf, bufSize);
+      }
+      buf[len++] = c;
+      buf[len] = '\0';
+    }
+  }
+}
+
 /*---------------Main-----------------------*/
 int main(int argc, char *argv[]){
-  printf("Today I have to Conquered this rendering.\n");
+  printf("\x1b[32m------------Welcome-----------\x1b[0m\n");
   printf("\x1b[37;44mPress any key to begin>>>>\x1b[0m\n");
   getchar();
 
@@ -892,7 +961,17 @@ int main(int argc, char *argv[]){
     rbFree(&rb);
     
     int c = readKeyPress();
-    
+
+     if(c == 6){
+      char *fileName = editorPrompt("open file: ");
+      if(fileName){
+	editorClearBuffer();
+	editorOpenFile(fileName);
+	free(E.fileName);
+	E.fileName = fileName;	
+      }
+    }
+     
     if(c == 17){
       //ctrl-Q
       printf("\x1b[2J");
@@ -900,7 +979,7 @@ int main(int argc, char *argv[]){
     }else if(c >= 32 && c <= 126){
       editorInsertChar(c);
     }
-
+   
     if(c == 8){
       editorBackspace();
     }

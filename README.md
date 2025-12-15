@@ -16,8 +16,8 @@ This is a learning-focused project, built to strengthen understanding of termina
   - Line editing
   - Cross-platform separation (planned)
 ---
-**Warning:** This is not intended to be a production-grade editor.
-It is a carefully planned learning project to deeply understand how editors like kilo, nano, and small parts of Emacs internally work.
+#### **Warning:** This is not intended to be a production-grade editor.
+#### It is a carefully planned learning project to deeply understand how editors like kilo, nano, and small parts of Emacs internally work.
 ---
 ## 🎯 Milestones
 ### ✔️ Milestone 1 — Raw Mode
@@ -59,7 +59,7 @@ It is a carefully planned learning project to deeply understand how editors like
 
  - Keybindings indicator (example: Ctrl+G)
 
-### ⚙️ Milestone 7 — Saving (In Progress)
+### ⚙️ Milestone 7 — Saving
 
 - Next implementation step:
   - Press Ctrl-S to save
@@ -69,16 +69,12 @@ It is a carefully planned learning project to deeply understand how editors like
   - Add “Save As” (create file if not exists)
 ---
 ## 📌 **Upcoming Features (TODO)**
-
-- Implement atomic file save (Milestone 7)
-- "Save As…" workflow using minibuffer
-- Command system (open file, close buffer, write file)
-- Mini prompt (like Emacs minibuffer) for commands
-- Huge-buffer optimization for fast bulk rendering
-- Cross-platform abstraction layer (Windows + POSIX)
-- Configuration for keybindings
+- Mini prompt (like Emacs minibuffer) for commands. We have, but we can improve it more
+- Cross-platform abstraction layer (Windows + POSIX) 
 - Syntax highlighting (long-term goal)
-
+- folder sturcture view
+- function or paragrah collapse
+- Jump function of cursor
 ---
 ## 📘 Project Roadmap Philosophy
 

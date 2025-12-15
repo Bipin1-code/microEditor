@@ -1,3 +1,5 @@
+//This file code can do all basic Editor's function. Soon I will merge this with cross-platform folder (real project folde)
+
 #include <stdio.h>
 #include <windows.h>
 #include <stdlib.h>
@@ -21,7 +23,10 @@
 #define ALT_ARROW_UP    0x0207
 #define ALT_ARROW_DOWN  0x0208
 
-static DWORD originalMode;
+#define HELP_W 50
+#define HELP_H 10
+
+static DWORD originalMode = 0;
 static DWORD originalOutMode = 0;
 static bool vt_enabled = false;
 
@@ -145,6 +150,9 @@ typedef struct{
   EditorLine *lines;
 
   char *fileName;
+  bool showHelp;
+  //this dirty flag inform that "buffer has changed since last save?" 
+  bool dirty; 
   
 } EditorState;
 
@@ -161,7 +169,9 @@ int getScreenSize(int *height, int *width){
 
   return 0;
 }
+
 void editorAppendLine(const char *s, size_t len);
+
 void initEditor(){
   E.fCx = 0;
   E.fCy = 0;
@@ -188,6 +198,8 @@ void initEditor(){
   }
 
   E.fileName = NULL;
+  E.showHelp = false;
+  E.dirty = false;
 }
 
 //effective columns we render (leave last column unused)
@@ -203,7 +215,6 @@ static int effectiveCols(){
  It counts characters and expands '\t' to tab stops (TAB).
  cx may be from 0..line->size.
 */
-
 int rx_from_cx(EditorLine *line, int cx){
   if(!line) return 0;
   int rx = 0;
@@ -348,7 +359,6 @@ void setCursorFromVisual(int vy, int vxAbsolute){
 }
 
 /*---------RenderBuffer (Helper of renderScreen())--------*/
-
 typedef struct{
   int len;
   int cap;
@@ -376,6 +386,15 @@ void rbAppend(RenderBuf *rb, const char *s, int length){
   }
   memcpy(&rb->buf[rb->len], s, length);
   rb->len += length;
+}
+
+void rbAppendChar(RenderBuf *rb, char c){
+  rbAppend(rb, &c, 1);
+}
+
+void rbAppendBytes(RenderBuf *rb, const char *s, int len){
+  if(len <= 0) return;
+  rbAppend(rb, s, len);
 }
 
 void rbAppendStr(RenderBuf *rb, const char *s){
@@ -502,12 +521,16 @@ void editorAppendLine(const char *s, size_t len){
 
 //ToDo: later I need to change printf function with RenderBuf
 void editorOpenFile(const char *fileName){
+  //if a file is already open, we need to free the old name here
+  free(E.fileName);
+  E.fileName = NULL;
+  
   FILE *f = fopen(fileName, "rb");
   if(!f){
     fprintf(stderr, "filed to load %s file.\n", fileName);
     return;
   }
-
+  E.dirty = false;
   E.fileName = strdup(fileName);
   char *line = NULL;
   size_t cap = 0;
@@ -664,6 +687,7 @@ void editorInsertChar(int c){
   line->size++;
   E.fCx++;
 
+  E.dirty = true;
   //update preferredRx for current arrow-up/down behavior
   E.preferredRx = cursorVisualXAbsolute();
 }
@@ -673,6 +697,7 @@ void editorDelCharInLine(EditorLine *line, int at){
   if(at < 0 || at >= line->size) return;
   memmove(&line->chars[at], &line->chars[at + 1], line->size - at);
   line->size--;
+  E.dirty = true;
 }
 
 void editorJoinLineWithPrev(int row){
@@ -696,6 +721,7 @@ void editorJoinLineWithPrev(int row){
 	  (E.countOfL - row - 1) * sizeof(EditorLine));
 
   E.countOfL--;
+  E.dirty = true;
 }
 
 void editorBackspace(){
@@ -706,6 +732,7 @@ void editorBackspace(){
     editorDelCharInLine(&E.lines[E.fCy], E.fCx - 1);
     E.fCx--;
     E.preferredRx = cursorVisualXAbsolute();
+    E.dirty = true;
     
     return;
   }
@@ -718,6 +745,7 @@ void editorBackspace(){
     E.fCy--;
     E.fCx = prevLen;
     E.preferredRx = cursorVisualXAbsolute();
+    E.dirty = true;
     
     return;
   }
@@ -733,6 +761,7 @@ void editorDelRow(int at){
 	  (E.countOfL - at - 1) * sizeof(EditorLine));
 
   E.countOfL--;
+  E.dirty = true;
 }
 
 void editorDelChar(){
@@ -747,7 +776,8 @@ void editorDelChar(){
 	    line->size - E.fCx);
     line->size--;
     line->chars[line->size] = '\0';
-
+    E.dirty = true;
+    
     return;
   }
 
@@ -765,7 +795,8 @@ void editorDelChar(){
 
     //delete next line from array
     editorDelRow(E.fCy + 1);
-
+    E.dirty = true;
+    
     return;
   }
 }
@@ -787,6 +818,7 @@ void insertLine(int at, const char *s){
   memcpy(E.lines[at].chars, s, E.lines[at].capacity);
 
   E.countOfL++;
+  E.dirty = true;
 }
 
 void editorInsertNewLine(){
@@ -811,6 +843,7 @@ void editorInsertNewLine(){
   E.fCx = 0;
 
   E.preferredRx = cursorVisualXAbsolute();
+  E.dirty = true;
 }
 
 //Tab key (we define Tab = 8chars)
@@ -821,6 +854,7 @@ void editorProcessTab(){
   for(int t = 0; t < spaces; t++){
     editorInsertChar(' ');
   }
+  E.dirty = true;
 }
 
 /*-----------Render Status Bar---------------*/
@@ -829,14 +863,16 @@ void renderStatusBar(RenderBuf *rb){
   char rstatus[128];
 
   int len = snprintf(status, sizeof(status),
-		     " [%.20s - %d lines]",
-		     E.fileName ? E.fileName : "[No Name]", E.countOfL);
+		     " [%.20s%s - %d lines]",
+		     E.fileName ? E.fileName : "[No Name]",
+		     E.dirty ? " *" : "",
+		     E.countOfL);
 
   int cx = E.fCx + 1;
   int cy = E.fCy + 1;
 
   snprintf(rstatus, sizeof(rstatus),
-	   " [Ln %d, Col %d] | [Help (Ctrl+H)] ", cy, cx);
+	   " [Ln %d, Col %d] | [Guide (Ctrl+G)] ", cy, cx);
 
   if(len > E.screenCols)
     len = E.screenCols;
@@ -931,6 +967,108 @@ char *editorPrompt(const char *prompt){
   }
 }
 
+/*--------------renderHelpBox-----------------*/
+void drawBoxLine(RenderBuf *rb, int srY, int srX, char left, char fill, char right, int width){
+  char buf[256];
+  if(width < 2) return;
+
+  int len = 0;
+  buf[len++] = left;
+
+  for(int i = 0; i < width - 2; i++){
+    buf[len++] = fill;
+  }
+
+  buf[len++] = right;
+  buf[len] = '\0';
+
+  char pos[64];
+  snprintf(pos, sizeof(pos), "\x1b[%d;%dH", srY + 1, srX + 1);
+  rbAppendStr(rb, "\x1b[34m");
+  rbAppendStr(rb, pos);
+  rbAppendStr(rb, buf);
+  rbAppendStr(rb, "\x1b[0m");
+}
+
+void drawBoxContent(RenderBuf *rb, int srY, int srX, int width, int lineIndex){
+  char pos[64];
+  snprintf(pos, sizeof(pos), "\x1b[%d;%dH", srY + 1, srX + 1);
+  rbAppendStr(rb, pos);
+  rbAppendStr(rb, "\x1b[34m");
+  rbAppendChar(rb, '|');
+  rbAppendStr(rb, "\x1b[32m");
+  int inner = width - 2;
+
+  static const char *helpText[] = {
+    "HELP",
+    "",
+    " CTRL-Q  QUIT",
+    " CTRL-F  OPEN FILE",
+    " CTRL-S  SAVE FILE",
+    " CTRL-G  HELP",
+    "",
+    " q / ESC Close HELP"
+  };
+
+  int textLines = sizeof(helpText) / sizeof(helpText[0]);
+  const char *text = "";
+  if(lineIndex - 1 < textLines && lineIndex - 1 >= 0)
+    text = helpText[lineIndex - 1];
+
+  int len = (int)strlen(text);
+  if(len > inner) len = inner;
+
+  int leftPad = (inner - len) / 2;
+  int rightPad = inner - leftPad - len;
+
+  for(int i = 0; i < leftPad; i++)
+    rbAppendChar(rb, ' ');
+
+  rbAppendBytes(rb, text, len);
+
+  for(int i = 0; i < rightPad; i++)
+    rbAppendChar(rb, ' ');
+
+  rbAppendStr(rb, "\x1b[34m");
+  rbAppendChar(rb, '|');
+  rbAppendStr(rb, "\x1b[0m");
+  
+}
+
+void renderHelpBox(RenderBuf *rb){
+  int sr = (E.screenRows - HELP_H) / 2;
+  int sc = (E.screenCols - HELP_W) / 2;
+
+  //top border
+  drawBoxLine(rb, sr, sc, '+', '-', '+', HELP_W);
+
+  //Content lines
+  for(int i = 1; i < HELP_H - 1; i++){
+    drawBoxContent(rb, sr + i, sc, HELP_W, i);
+  }
+
+  //Bottom border
+  drawBoxLine(rb, sr + HELP_H - 1, sc, '+', '-', '+', HELP_W);
+}
+
+/*---------------FileSave------------------*/
+bool editorSaveToFile(const char *path){
+  FILE *f = fopen(path, "w");
+  if(!f) return false;
+  for(int i = 0; i < E.countOfL; i++){
+    EditorLine *line = &E.lines[i];
+
+    if(line->size > 0){
+      fwrite(line->chars, 1, line->size, f);
+    }
+
+    fwrite("\n", 1, 1, f);
+  }
+  
+  fclose(f);
+  return true;
+}
+
 /*---------------Main-----------------------*/
 int main(int argc, char *argv[]){
   printf("\x1b[32m------------Welcome-----------\x1b[0m\n");
@@ -952,6 +1090,11 @@ int main(int argc, char *argv[]){
     rbInit(&rb);
     renderScreen(&rb);
     renderStatusBar(&rb);
+
+    if(E.showHelp){
+      renderHelpBox(&rb);
+    }
+    
     positionCursor(&rb);
 
     //One Write
@@ -962,7 +1105,19 @@ int main(int argc, char *argv[]){
     
     int c = readKeyPress();
 
-     if(c == 6){
+    if(E.showHelp){
+      if(c == 'q'|| c == 27){
+	E.showHelp = false;
+      }
+      continue;
+    }
+    if(c == 7){
+      //ctrl+G
+      E.showHelp = true;
+      continue;
+    }
+
+    if(c == 6){
       char *fileName = editorPrompt("open file: ");
       if(fileName){
 	editorClearBuffer();
@@ -978,6 +1133,26 @@ int main(int argc, char *argv[]){
       break;
     }else if(c >= 32 && c <= 126){
       editorInsertChar(c);
+    }
+
+    if(c == 19){
+      //ctrl+S
+      if(E.fileName == NULL){
+	char *name = editorPrompt("Save as: ");
+	if(name){
+	  if(editorSaveToFile(name)){
+	    E.dirty = false;
+	    free(E.fileName);
+	    E.fileName = name;
+	  }else{
+	    free(name);
+	  }
+	}
+      }else{
+	editorSaveToFile(E.fileName);
+	E.dirty = false;
+      }
+      continue;
     }
    
     if(c == 8){
